@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 
 import botocore
+import botocore.exceptions
 import time
 import hashlib
 import pickle
-from ddbc.utils import get_table
+from ddbc.utils import get_table, get_dynamodb_resource
 
 
 class Client(object):
@@ -21,6 +22,7 @@ class Client(object):
         self.table = get_table(table_name, region)
         self.default_ttl = default_ttl
         self.report_error = report_error
+        self.resource = get_dynamodb_resource(region)
 
     def __contains__(self, key):
         return self.get(key) is not None
@@ -46,6 +48,40 @@ class Client(object):
 
         self.cache[key] = item
         return item.get('data', default)
+
+    def batch_get(self, keys):
+        request = {
+            'RequestItems': {
+                self.table.table_name: {
+                    'Keys': [{'key': self._generate_hash_key(key)} for key in keys]
+                }
+            }
+        }
+        wait = 0.1
+        while wait < 2:
+            try:
+                response = self.resource.batch_get_item(**request)
+                for item in response['Responses'][self.table.table_name]:
+                    item = self.deserialize(item)
+                    self.cache[item['original_key']] = item
+                if response.get('UnprocessedKeys'):
+                    request = response['UnprocessedKeys']
+                else:
+                    break
+                wait = 0.1
+            except botocore.exceptions.ClientError as e:
+                if e.response['Error']['Code'] == 'ProvisionedThroughputExceededException':
+                    time.sleep(wait)
+                    wait = wait * 2
+                else:
+                    raise
+
+    def scan(self):
+        paginator = self.table.meta.client.get_paginator('scan')
+        items = paginator.paginate(TableName=self.table.table_name).build_full_result()['Items']
+        for item in items:
+            item = self._deserialize(item)
+            self.cache[item['original_key']] = item
 
     def __setitem__(self, key, value):
         return self.set(key, value)
@@ -108,6 +144,7 @@ class Client(object):
 
     def put_table_item(self, key, item):
         item['key'] = self._generate_hash_key(key)
+        item['original_key'] = key
         self.table.put_item(Item=self._serialize(item))
         self._deserialize(item)
 
