@@ -9,7 +9,6 @@ from ddbc.utils import get_table
 
 class Client(object):
 
-    cache = {}
 
     def __init__(
         self,
@@ -18,6 +17,7 @@ class Client(object):
         default_ttl=-1,
         report_error=False
     ):
+        self.cache = {}
         self.table = get_table(table_name, region)
         self.default_ttl = default_ttl
         self.report_error = report_error
